@@ -11,6 +11,11 @@
 #define LOG_ERROR(...) std::cout << __VA_ARGS__ << std::endl
 
 class ServoCommunicator {
+    enum Operation {
+        READ = 0x01,
+        WRITE = 0x02,
+    };
+
     enum MessageGroup {
         ENABLE_ELEVATION = 0x11,
         ENABLE_AZIMUTH = 0x12,
@@ -28,6 +33,12 @@ class ServoCommunicator {
         MODE = 0x09,
         BITS_PER_REVOL = 0x0C,
     };
+
+    struct AzimuthElevation {
+        double azimuth;
+        double elevation;
+    };
+
 public:
 
     explicit ServoCommunicator(BS::thread_pool &threadPool);
@@ -40,27 +51,37 @@ public:
 
     void enableServos(bool enable, BS::thread_pool &threadPool);
 
+    void resetErrors(BS::thread_pool &threadPool);
+
     void setSpeed(int32_t speed, BS::thread_pool &threadPool);
 
     void setAcceleration(int32_t acceleration, BS::thread_pool &threadPool);
 
     void setDeceleration(int32_t deceleration, BS::thread_pool &threadPool);
 
-    void setPose(float azimuth, float elevation, BS::thread_pool &threadPool);
-
-    int getBitsPerRevol();
+    void setPose(int32_t azimuth, int32_t elevation, BS::thread_pool &threadPool);
 
 private:
 
-    bool checkReadiness() const;
+    [[nodiscard]] bool checkReadiness() const;
 
     void setMode(BS::thread_pool &threadPool);
 
-    void sendMessage(const unsigned char* message, uint8_t msgLength);
+    void sendMessage(const std::vector<unsigned char> &message);
 
-    bool waitForResponse(char* retBytes = nullptr);
+    bool waitForResponse();
 
-    static std::array<unsigned char, 4> intToByteArray(int32_t paramInt);
+    template<typename IntType>
+    [[nodiscard]] inline static std::vector<uint8_t> serializeLEInt(const IntType &value) {
+        std::vector<uint8_t> data{};
+        for (size_t nBytes = 0; nBytes <= (sizeof(IntType) - 1); ++nBytes) {
+            data.push_back((value >> nBytes * 8) & 0xFF);
+        }
+
+        return data;
+    }
+
+    static AzimuthElevation quaternionToAzimuthElevation(double x, double y, double z, double w);
 
     bool isInitialized_ = false;
     bool isReady_ = false;
