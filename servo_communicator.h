@@ -14,6 +14,7 @@ class ServoCommunicator {
     enum Operation {
         READ = 0x01,
         WRITE = 0x02,
+        WRITE_CONTINUOS = 0x04,
     };
 
     enum MessageGroup {
@@ -28,10 +29,8 @@ class ServoCommunicator {
         ACCELERATION = 0x00,
         DECELERATION = 0x01,
         ANGLE = 0x04,
-        REVOL = 0x05,
         SPEED = 0x07,
         MODE = 0x09,
-        BITS_PER_REVOL = 0x0C,
     };
 
     struct AzimuthElevation {
@@ -43,6 +42,8 @@ public:
 
     explicit ServoCommunicator(BS::thread_pool &threadPool);
 
+    ~ServoCommunicator();
+
     [[nodiscard]] bool isInitialized() const { return isInitialized_; };
 
     [[nodiscard]] bool isReady() const { return isReady_; };
@@ -50,8 +51,6 @@ public:
     [[nodiscard]] bool servosEnabled() const { return servosEnabled_; }
 
     void enableServos(bool enable, BS::thread_pool &threadPool);
-
-    void resetErrors(BS::thread_pool &threadPool);
 
     void setSpeed(int32_t speed, BS::thread_pool &threadPool);
 
@@ -69,7 +68,7 @@ private:
 
     void sendMessage(const std::vector<unsigned char> &message);
 
-    bool waitForResponse();
+    bool waitForResponse(const std::vector<uint32_t>& statusBytes);
 
     template<typename IntType>
     [[nodiscard]] inline static std::vector<uint8_t> serializeLEInt(const IntType &value) {

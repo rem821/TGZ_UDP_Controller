@@ -4,6 +4,8 @@
 #include <cstring>
 #include <bitset>
 #include <sstream>
+#include <cmath>
+#include <sys/unistd.h>
 #include "servo_communicator.h"
 
 constexpr int RESPONSE_TIMEOUT_US = 50000;
@@ -15,6 +17,11 @@ constexpr int RESPONSE_MIN_BYTES = 6;
 constexpr unsigned char IDENTIFIER_1 = 0x47;
 constexpr unsigned char IDENTIFIER_2 = 0x54;
 
+constexpr int32_t AZIMUTH_MAX_VALUE = INT32_MAX;
+constexpr int32_t AZIMUTH_MIN_VALUE = -1'073'741'824;
+
+constexpr int32_t ELEVATION_MAX_VALUE = 715'827'882;
+constexpr int32_t ELEVATION_MIN_VALUE = -715'827'882;
 
 ServoCommunicator::ServoCommunicator(BS::thread_pool &threadPool) : socket_(socket(AF_INET, SOCK_DGRAM, 0)) {
 
@@ -26,10 +33,10 @@ ServoCommunicator::ServoCommunicator(BS::thread_pool &threadPool) : socket_(sock
     memset(&myAddr_, 0, sizeof(myAddr_));
     myAddr_.sin_family = AF_INET;
     myAddr_.sin_addr.s_addr = INADDR_ANY;
-    myAddr_.sin_port = htons(8552);
 
     if (bind(socket_, (sockaddr *) &myAddr_, sizeof(myAddr_)) < 0) {
         LOG_ERROR("bind socket failed");
+        return;
     }
 
     timeval timeout{};
@@ -38,6 +45,7 @@ ServoCommunicator::ServoCommunicator(BS::thread_pool &threadPool) : socket_(sock
 
     if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         LOG_ERROR("setsockopt failed");
+        return;
     }
 
     memset(&destAddr_, 0, sizeof(destAddr_));
@@ -48,6 +56,10 @@ ServoCommunicator::ServoCommunicator(BS::thread_pool &threadPool) : socket_(sock
     setMode(threadPool);
 }
 
+ServoCommunicator::~ServoCommunicator() {
+    close(socket_);
+}
+
 void ServoCommunicator::enableServos(bool enable, BS::thread_pool &threadPool) {
     if (!checkReadiness()) {
         return;
@@ -56,24 +68,18 @@ void ServoCommunicator::enableServos(bool enable, BS::thread_pool &threadPool) {
     threadPool.push_task([this, enable]() {
         unsigned char const en = enable ? 0x01 : 0x00;
 
-        std::vector<unsigned char> const enableAzimuthBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ENABLE_AZIMUTH,
-                                                                MessageElement::ENABLE, en};
-
-        std::vector<unsigned char> const enableElevationBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ENABLE_ELEVATION,
-                                                                  MessageElement::ENABLE, en};
-
-        while (true) {
-            sendMessage(enableAzimuthBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
+        std::vector<unsigned char> const enableBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                         Operation::WRITE,
+                                                         MessageGroup::ENABLE_AZIMUTH, MessageElement::ENABLE,
+                                                         en, 0x00, 0x00, 0x00,
+                                                         Operation::WRITE,
+                                                         MessageGroup::ENABLE_ELEVATION, MessageElement::ENABLE,
+                                                         en, 0x00, 0x00, 0x00};
 
         while (true) {
-            sendMessage(enableElevationBuffer);
+            sendMessage(enableBuffer);
 
-            if (waitForResponse()) {
+            if (waitForResponse({5, 9})) {
                 break;
             }
         }
@@ -87,36 +93,6 @@ void ServoCommunicator::enableServos(bool enable, BS::thread_pool &threadPool) {
     });
 }
 
-void ServoCommunicator::resetErrors(BS::thread_pool &threadPool) {
-    if (!checkReadiness()) {
-        return;
-    }
-
-    threadPool.push_task([this]() {
-        std::vector<unsigned char> const resetErrorsAzimuthBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ENABLE_AZIMUTH,
-                                                                     MessageElement::ENABLE, 0x08};
-
-        std::vector<unsigned char> const resetErrorsElevationBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ENABLE_ELEVATION,
-                                                                       MessageElement::ENABLE, 0x08};
-
-        while (true) {
-            sendMessage(resetErrorsAzimuthBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
-        while (true) {
-            sendMessage(resetErrorsElevationBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-    });
-}
-
 
 void ServoCommunicator::setSpeed(int32_t speed, BS::thread_pool &threadPool) {
     if (!checkReadiness()) {
@@ -126,30 +102,22 @@ void ServoCommunicator::setSpeed(int32_t speed, BS::thread_pool &threadPool) {
     threadPool.push_task([this, speed]() {
         auto speedBytes = serializeLEInt(speed);
 
-        std::vector<unsigned char> const azimuthSpeedBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::AZIMUTH,
-                                                               MessageElement::SPEED, speedBytes[0], speedBytes[1], speedBytes[2],
-                                                               speedBytes[3]};
-
-        std::vector<unsigned char> const elevationSpeedBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ELEVATION,
-                                                                 MessageElement::SPEED, speedBytes[0], speedBytes[1], speedBytes[2],
-                                                                 speedBytes[3]};
+        std::vector<unsigned char> const speedBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                        Operation::WRITE,
+                                                        MessageGroup::AZIMUTH, MessageElement::SPEED,
+                                                        speedBytes[0], speedBytes[1], speedBytes[2], speedBytes[3],
+                                                        Operation::WRITE,
+                                                        MessageGroup::ELEVATION, MessageElement::SPEED,
+                                                        speedBytes[0], speedBytes[1], speedBytes[2], speedBytes[3]
+        };
 
         while (true) {
-            sendMessage(azimuthSpeedBuffer);
+            sendMessage(speedBuffer);
 
-            if (waitForResponse()) {
+            if (waitForResponse({5, 9})) {
                 break;
             }
         }
-
-        while (true) {
-            sendMessage(elevationSpeedBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
     });
 }
 
@@ -161,30 +129,22 @@ void ServoCommunicator::setAcceleration(int32_t acceleration, BS::thread_pool &t
     threadPool.push_task([this, acceleration]() {
         auto accBytes = serializeLEInt(acceleration);
 
-        std::vector<unsigned char> const azimuthAccBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::AZIMUTH,
-                                                             MessageElement::ACCELERATION, accBytes[0], accBytes[1], accBytes[2],
-                                                             accBytes[3]};
-
-        std::vector<unsigned char> const elevationAccBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ELEVATION,
-                                                               MessageElement::ACCELERATION, accBytes[0], accBytes[1], accBytes[2],
-                                                               accBytes[3]};
+        std::vector<unsigned char> const accBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                      Operation::WRITE,
+                                                      MessageGroup::AZIMUTH, MessageElement::ACCELERATION,
+                                                      accBytes[0], accBytes[1], accBytes[2], accBytes[3],
+                                                      Operation::WRITE,
+                                                      MessageGroup::ELEVATION, MessageElement::ACCELERATION,
+                                                      accBytes[0], accBytes[1], accBytes[2], accBytes[3],
+        };
 
         while (true) {
-            sendMessage(azimuthAccBuffer);
+            sendMessage(accBuffer);
 
-            if (waitForResponse()) {
+            if (waitForResponse({5, 9})) {
                 break;
             }
         }
-
-        while (true) {
-            sendMessage(elevationAccBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
     });
 }
 
@@ -196,30 +156,22 @@ void ServoCommunicator::setDeceleration(int32_t deceleration, BS::thread_pool &t
     threadPool.push_task([this, deceleration]() {
         auto decBytes = serializeLEInt(deceleration);
 
-        std::vector<unsigned char> const azimuthDecBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::AZIMUTH,
-                                                             MessageElement::ACCELERATION, decBytes[0], decBytes[1], decBytes[2],
-                                                             decBytes[3]};
-
-        std::vector<unsigned char> const elevationDecBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ELEVATION,
-                                                               MessageElement::ACCELERATION, decBytes[0], decBytes[1], decBytes[2],
-                                                               decBytes[3]};
+        std::vector<unsigned char> const decBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                      Operation::WRITE,
+                                                      MessageGroup::AZIMUTH, MessageElement::ACCELERATION,
+                                                      decBytes[0], decBytes[1], decBytes[2], decBytes[3],
+                                                      Operation::WRITE,
+                                                      MessageGroup::ELEVATION, MessageElement::ACCELERATION,
+                                                      decBytes[0], decBytes[1], decBytes[2], decBytes[3],
+        };
 
         while (true) {
-            sendMessage(azimuthDecBuffer);
+            sendMessage(decBuffer);
 
-            if (waitForResponse()) {
+            if (waitForResponse({5, 9})) {
                 break;
             }
         }
-
-        while (true) {
-            sendMessage(elevationDecBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
     });
 }
 
@@ -227,35 +179,42 @@ void ServoCommunicator::setPose(int32_t azimuth, int32_t elevation, BS::thread_p
     if (!checkReadiness()) {
         return;
     }
+    if (azimuth < AZIMUTH_MIN_VALUE) azimuth = AZIMUTH_MIN_VALUE;
+    if (azimuth > AZIMUTH_MAX_VALUE) azimuth = AZIMUTH_MAX_VALUE;
+    if (elevation < ELEVATION_MIN_VALUE) elevation = ELEVATION_MIN_VALUE;
+    if (elevation > ELEVATION_MAX_VALUE) elevation = ELEVATION_MAX_VALUE;
 
     threadPool.push_task([this, azimuth, elevation]() {
-        auto azimuthBytes = serializeLEInt(azimuth);
-        auto elevationBytes = serializeLEInt(elevation);
+        int32_t azRevol = 0, elRevol = 0;
 
-        std::vector<unsigned char> const azimuthAngleBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::AZIMUTH,
-                                                               MessageElement::ANGLE, azimuthBytes[0], azimuthBytes[1], azimuthBytes[2],
-                                                               azimuthBytes[3]};
+        if(azimuth < 0) azRevol = -1;
+        if(elevation < 0) elRevol = -1;
 
-        std::vector<unsigned char> const elevationAngleBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ELEVATION,
-                                                                 MessageElement::ANGLE, elevationBytes[0], elevationBytes[1], elevationBytes[2],
-                                                                 elevationBytes[3]};
+        auto azAngleBytes = serializeLEInt(azimuth);
+        auto azRevolBytes= serializeLEInt(azRevol);
+        auto elAngleBytes = serializeLEInt(elevation);
+        auto elRevolBytes= serializeLEInt(elRevol);
+
+        std::vector<unsigned char> const angleBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                        Operation::WRITE_CONTINUOS,
+                                                        MessageGroup::AZIMUTH, MessageElement::ANGLE,
+                                                        0x02,
+                                                        azAngleBytes[0], azAngleBytes[1], azAngleBytes[2], azAngleBytes[3],
+                                                        azRevolBytes[0], azRevolBytes[1], azRevolBytes[2], azRevolBytes[3],
+                                                        Operation::WRITE_CONTINUOS,
+                                                        MessageGroup::ELEVATION, MessageElement::ANGLE,
+                                                        0x02,
+                                                        elAngleBytes[0], elAngleBytes[1], elAngleBytes[2], elAngleBytes[3],
+                                                        elRevolBytes[0], elRevolBytes[1], elRevolBytes[2], elRevolBytes[3],
+        };
 
         while (true) {
-            sendMessage(azimuthAngleBuffer);
+            sendMessage(angleBuffer);
 
-            if (waitForResponse()) {
+            if (waitForResponse({5, 10})) {
                 break;
             }
         }
-
-        while (true) {
-            sendMessage(elevationAngleBuffer);
-
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
     });
 }
 
@@ -275,23 +234,18 @@ bool ServoCommunicator::checkReadiness() const {
 
 void ServoCommunicator::setMode(BS::thread_pool &threadPool) {
     threadPool.push_task([this]() {
-        std::vector<unsigned char> const azimuthModeBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::AZIMUTH,
-                                                              MessageElement::MODE, 0x01};
-        std::vector<unsigned char> const elevationModeBuffer = {IDENTIFIER_1, IDENTIFIER_2, Operation::WRITE, MessageGroup::ELEVATION,
-                                                                MessageElement::MODE, 0x01};
+        std::vector<unsigned char> const modeBuffer = {IDENTIFIER_1, IDENTIFIER_2,
+                                                       Operation::WRITE,
+                                                       MessageGroup::AZIMUTH, MessageElement::MODE,
+                                                       0x01, 0x00, 0x00, 0x00,
+                                                       Operation::WRITE,
+                                                       MessageGroup::ELEVATION, MessageElement::MODE,
+                                                       0x01, 0x00, 0x00, 0x00};
 
         while (true) {
-            sendMessage(azimuthModeBuffer);
+            sendMessage(modeBuffer);
 
-            if (waitForResponse()) {
-                break;
-            }
-        }
-
-        while (true) {
-            sendMessage(elevationModeBuffer);
-
-            if (waitForResponse()) {
+            if (waitForResponse({5, 9})) {
                 break;
             }
         }
@@ -310,7 +264,7 @@ void ServoCommunicator::sendMessage(const std::vector<unsigned char> &message) {
     isReady_ = false;
 }
 
-bool ServoCommunicator::waitForResponse() {
+bool ServoCommunicator::waitForResponse(const std::vector<uint32_t> &statusBytes) {
     std::array<char, 1024> buffer{};
     struct sockaddr_in src_addr{};
     socklen_t addrlen = sizeof(src_addr);
@@ -326,8 +280,10 @@ bool ServoCommunicator::waitForResponse() {
     }
 
     std::string response;
-    for (int i = 0; i < nbytes; i++) {
-        response += buffer[i];
+    if (nbytes < 100) {
+        for (int i = 0; i < nbytes; i++) {
+            response += buffer[i];
+        }
     }
 
     isReady_ = true;
@@ -336,14 +292,19 @@ bool ServoCommunicator::waitForResponse() {
     } else if (response.length() < RESPONSE_MIN_BYTES) {
         LOG_ERROR("Malformed packet received!");
     } else {
-        std::cout << "Received response: " << response.c_str() << std::endl;
-        return response.c_str()[5] == '\0'; // Fifth byte should be 0
+        //std::cout << "Received response: " << response.c_str() << std::endl;
+        bool isOk = true;
+        for (uint32_t const status: statusBytes) {
+            isOk &= response.c_str()[status] == '\0'; // Xth byte should be 0
+        }
+        return isOk;
     }
 
     return false;
 }
 
-ServoCommunicator::AzimuthElevation ServoCommunicator::quaternionToAzimuthElevation(double x, double y, double z, double w) {
+ServoCommunicator::AzimuthElevation
+ServoCommunicator::quaternionToAzimuthElevation(double x, double y, double z, double w) {
     double const sinr_cosp = 2 * (w * x + y * z);
     double const cosr_cosp = 1 - 2 * (x * x + y * y);
     double const elevation = std::atan2(sinr_cosp, cosr_cosp);
